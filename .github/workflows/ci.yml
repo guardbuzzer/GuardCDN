@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  workflow_dispatch
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Archive code for deployment
+        run: git archive -o app.tar.gz HEAD
+
+      - name: Copy code archive to VPS
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: app.tar.gz
+          target: /home/${{ secrets.VPS_USER }}/
+
+      - name: Deploy on VPS via SSH
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            APP_DIR=/home/${{ secrets.VPS_USER }}/cdn-upload
+            TAR_PATH=/home/${{ secrets.VPS_USER }}/app.tar.gz
+
+            mkdir -p "$APP_DIR"
+            tar xzf "$TAR_PATH" -C "$APP_DIR"
+            rm "$TAR_PATH"
+
+            cat > "$APP_DIR/.env" <<EOF
+            API_KEY=${{ secrets.API_KEY }}
+            UPLOAD_PATH=${{ secrets.UPLOAD_PATH }}
+            PUBLIC_URL=${{ secrets.PUBLIC_URL }}
+            PORT=${{ secrets.PORT }}
+            EOF
+
+            cd "$APP_DIR"
+            docker build -t cdn-server:latest . > /dev/null
+            docker stop cdn-server || true
+            docker rm cdn-server || true
+            docker run -d --restart unless-stopped --name cdn-server \
+              --env-file .env \
+              -p ${PORT:-8000}:8000 \
+              -v ${UPLOAD_PATH}:/var/www/cdn \
+              cdn-server:latest
